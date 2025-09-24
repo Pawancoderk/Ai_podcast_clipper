@@ -1,5 +1,5 @@
 from pytubefix import YouTube
-from pytubefix.cli import on_progress
+from pytubefix.cli import on_progress  
 
 url1 = "https://www.youtube.com/watch?v=SOG0GmKts_I"
 url2 = "https://www.youtube.com/watch?v=-vMgbJ6WqN4"
