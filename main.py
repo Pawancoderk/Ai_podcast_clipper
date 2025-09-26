@@ -42,6 +42,47 @@ mount_path = "/root/.cache/torch"
 
 auth_scheme = HTTPBearer()
 
+def process_clip(base_dir: str, original_video_path: str, s3_key: str, start_time: float, end_time: str, clip_index: int, transceipt_segments: list):
+    clip_name = f"clip{clip_index}"
+    s3_key_dir = os.path.dirname(s3_key)
+    output_s3_key = f"{s3_key_dir}/{clip_name}.mp4"
+    print(f"Outputs3 key: {output_s3_key}")
+
+    clip_dir = base_dir / clip_name
+    clip_dir.mkdir(parents=True, exist_ok=True)
+
+    # Segment path: Original clip from start to end
+    clip_segment_path = clip_dir / f"{clip_name}_segment.mp4"
+    vertical_mp4_path = clip_dir / "pyavi" / "video_out_vertical.mp4"
+    subtitle_output_path = clip_dir / "pyavi" / "video_with_subtitles.mp4"
+
+    (clip_dir / "pywork").mkdir(exist_ok=True)
+    pyframes_path = clip_dir / "pyframes"
+    pyavi_path = clip_dir / "pyavi"
+    audio_path = clip_dir / "pyavi" / "audio.wav"
+
+    pyframes_path.mkdir(exist_ok=True)
+    pyavi_path.mkdir(exist_ok=True)
+
+    duration = end_time - start_time
+    cut_command = ("ffmpeg -i {original_video_path} -ss {start_time} -t {duration}"
+                   f"{clip_segment_path}")
+    subprocess.run(cut_command, shell=True, check=True, capture_output=True, text=True)
+
+    extract_cmd = f"ffmpeg -i {clip_segment_path} -vn -acodec pcm_s16le -ac 1 {audio_path}"
+    subprocess.run(extract_cmd, shell=True, check=True, capture_output=True)
+
+    shutil.copy(clip_segment_path, base_dir / f"{clip_name}.mp4")
+
+    columbia_command = (f"python Columbia_test.py --videoName {clip_name}"
+                        f"--videoFolder {str{base_dir}}"
+                        f"--pretrainModel weight/finetuning_TalkSet.model")
+    
+    columbia_start_time = time.time()
+    subprocess.run(columbia_command,cwd="/asd" ,shell=True )
+    columbia_end_time = time.time()
+    print(f"Columbia script completed in {columbia_end_time - columbia_start_time:.2f} seconds")
+
 
 @app.cls(gpu="L40S", timeout=900, retries=0, scaledown_window=20, secrets=[modal.Secret.from_name("ai-podcast-clipper-secret")], volumes={mount_path: volume})
 class AiPodcastClipper:
