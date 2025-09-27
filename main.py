@@ -1,5 +1,7 @@
+from glob import glob
 import json
 import pathlib
+import pickle
 import shutil
 import subprocess
 from time import time
@@ -9,6 +11,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import os
 import modal
+import numpy as np
 from pydantic import BaseModel
 import whisperx
 from google import genai
@@ -41,6 +44,23 @@ volume = modal.Volume.from_name(
 mount_path = "/root/.cache/torch"
 
 auth_scheme = HTTPBearer()
+
+def create_vertical_video(tracks, scores, pyframes_path, pyavi_path, audio_path, output_path, framerate=25):
+    target_width = 1080
+    target_height = 1920
+
+    flist = glob.glob(os.path.join(pyframes_path,"*jpg"))
+    flist.sort()
+
+    faces = [[] for _ in range(len(flist))]
+
+    for tidx, track in enumerate(tracks):
+        score_array = scores[tidx]
+        for fidx, frame in enumerate(track[["track"] ["frame"].tolist()]):
+            slice_start = max(fidx - 30, 0)
+            slice_end = min(fidx + 30, len(score_array))
+            score_slice = score_array[slice_start:slice_end]
+            avg_score = float(np.mean(score_slice))
 
 def process_clip(base_dir: str, original_video_path: str, s3_key: str, start_time: float, end_time: str, clip_index: int, transceipt_segments: list):
     clip_name = f"clip{clip_index}"
@@ -83,6 +103,21 @@ def process_clip(base_dir: str, original_video_path: str, s3_key: str, start_tim
     columbia_end_time = time.time()
     print(f"Columbia script completed in {columbia_end_time - columbia_start_time:.2f} seconds")
 
+    tracks_path = clip_dir / "pywork" / "tracks.pckl"
+    scores_path = clip_dir / "pywork" / "scores.pckl"
+    if not tracks_path.exists() or not scores_path.exists():
+        raise FileNotFoundError("Tracks or scores are not found for clips")
+    
+    with open(tracks_path, "rb") as f:
+        tracks = pickle.load(f)
+    
+    with open(scores_path, "rb") as f:
+        scores = pickle.load(f)
+
+    cvv_start_time = time.time()
+    create_vertical_video(tracks, scores, pyavi_path, pyavi_path, audio_path, vertical_mp4_path)
+    cvv_end_time = time.time()
+    print(f"Clip {clip_index} vertical video vreation time: {cvv_end_time - cvv_start_time:.2f} seconds")
 
 @app.cls(gpu="L40S", timeout=900, retries=0, scaledown_window=20, secrets=[modal.Secret.from_name("ai-podcast-clipper-secret")], volumes={mount_path: volume})
 class AiPodcastClipper:
