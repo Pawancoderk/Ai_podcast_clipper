@@ -7,12 +7,15 @@ import subprocess
 from time import time
 import uuid
 import boto3
+import cv2
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import os
+import ffmpegcv
 import modal
 import numpy as np
 from pydantic import BaseModel
+from tqdm import tqdm
 import whisperx
 from google import genai
 
@@ -62,6 +65,47 @@ def create_vertical_video(tracks, scores, pyframes_path, pyavi_path, audio_path,
             score_slice = score_array[slice_start:slice_end]
             avg_score = float(np.mean(score_slice))
 
+            faces[frame].append(
+                 {'track': tidx, 'score': avg_score, 's': track['proc_track']["s"][fidx], 'x': track['proc_track']["x"][fidx], 'y': track['proc_track']["y"][fidx]})
+    
+    temp_video_path = os.path.join(pyavi_path, "video_only.mp4")
+
+    vout = None
+    for fidx, frame in tqdm(enumerate(flist), total=len(flist), desc="Creating vertical video"):
+        img = cv2.imread(frame)
+        if img is None:
+            continue
+
+        current_faces = faces[fidx]
+
+        max_score_face = max(
+            current_faces, key=lambda face: face['score']) if current_faces else None
+        
+        if max_score_face and max_score_face['score'] < 0:
+            max_score_face = None
+
+        if vout is None:
+            vout = ffmpegcv.VideoWriter(
+                file = temp_video_path,
+                codec=None,
+                fps = framerate,
+                resize=(target_width, target_height)
+            )
+        
+        if max_score_face:
+            mode = "crop"
+        else:
+            mode = "resize"
+        
+        if mode == "resize":
+            scale = target_width / img.shape[1]
+            resized_height = int(img.shape[0] * scale)
+            resized_image = cv2.resize(img, (target_width, resized_height), interpolation=cv2.INTER_AREA)
+
+
+
+
+# creates a single short clip  
 def process_clip(base_dir: str, original_video_path: str, s3_key: str, start_time: float, end_time: str, clip_index: int, transceipt_segments: list):
     clip_name = f"clip{clip_index}"
     s3_key_dir = os.path.dirname(s3_key)
@@ -85,8 +129,8 @@ def process_clip(base_dir: str, original_video_path: str, s3_key: str, start_tim
     pyavi_path.mkdir(exist_ok=True)
 
     duration = end_time - start_time
-    cut_command = ("ffmpeg -i {original_video_path} -ss {start_time} -t {duration}"
-                   f"{clip_segment_path}")
+    cut_command = f"ffmpeg -i {original_video_path} -ss {start_time} -t {duration} {clip_segment_path}"
+
     subprocess.run(cut_command, shell=True, check=True, capture_output=True, text=True)
 
     extract_cmd = f"ffmpeg -i {clip_segment_path} -vn -acodec pcm_s16le -ac 1 {audio_path}"
@@ -95,7 +139,7 @@ def process_clip(base_dir: str, original_video_path: str, s3_key: str, start_tim
     shutil.copy(clip_segment_path, base_dir / f"{clip_name}.mp4")
 
     columbia_command = (f"python Columbia_test.py --videoName {clip_name}"
-                        f"--videoFolder {str{base_dir}}"
+                        f"--videoFolder {str(base_dir)}"
                         f"--pretrainModel weight/finetuning_TalkSet.model")
     
     columbia_start_time = time.time()
@@ -218,11 +262,11 @@ This is a podcast video transcript consisting of word, along with each words's s
         s3_client = boto3.client("s3")
         s3_client.download_file("ai-podcast-clipper", s3_key, str(video_path))
 
-        # 1 Transcription
+        # 1 Transcription by whisperX
         transcript_segments_json = self.transcribe_video(base_dir, video_path)
         transcript_segments = json.loads(transcript_segments_json)
 
-        # 2 Identify moments for clips
+        # 2 Identify moments for clips with Gemini
         print("Identifying the clip moments...")
         identified_moments_raw = self.identify_moments(transcript_segments)
         
@@ -242,8 +286,8 @@ This is a podcast video transcript consisting of word, along with each words's s
         # 3 Process clips
         for index, moment in enumerate(clip_moments):
             if "start" in moment  and "end" in moment:
-                print("Processing clips" + str(index) + "from" str(moment["start"]) + "to" + str(moment["end"]))
-                process_clips(base_dir, video_path, s3_key, moment["start"], moment["end"], index, transcript_segments)
+                print(f"Processing clip {index} from {moment['start']} to {moment['end']}")
+                process_clip(base_dir, video_path, s3_key, moment["start"], moment["end"], index, transcript_segments)
         
         if base_dir.exists():
             print("Cleaning up temp dict after" + base_dir)
