@@ -102,6 +102,32 @@ def create_vertical_video(tracks, scores, pyframes_path, pyavi_path, audio_path,
             resized_height = int(img.shape[0] * scale)
             resized_image = cv2.resize(img, (target_width, resized_height), interpolation=cv2.INTER_AREA)
 
+            scale_for_bg = max(
+                target_width / img.shape[1], target_height / img.shape[0])
+            bg_width = int(img.shape[1] * scale_for_bg)
+            bg_height = int(img.shape[0] * scale_for_bg)
+
+            blurred_background = cv2.resize(img, (bg_width, bg_height))
+            blurred_background = cv2.GaussianBlur(blurred_background, (121, 121), 0)
+
+            crop_x = (bg_width - target_width) // 2
+            crop_y = (bg_height - target_height) // 2
+            blurred_background = blurred_background[crop_y: crop_y + target_height, crop_x: crop_x + target_width]
+
+            center_y = {target_height - resized_height} // 2
+            blurred_background[center_y: center_y + resized_height, :] = resized_image
+
+            vout.write(blurred_background)
+
+        elif mode == "crop":
+            scale = target_height / img.shape[0]
+            resized_image = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+            frame_width = resized_image.shape[1]
+            center_x = int(max_score_face["x"] * scale  if max_score_face else frame_width // 2)
+            top_x = max(min(center_x - target_width // 2, frame_width - target_width), 0)
+
+            image_cropped = resized_image[0: target_height, top_x: top_x + target_width]
+
 
 
 
