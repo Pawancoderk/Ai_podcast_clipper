@@ -15,6 +15,7 @@ import ffmpegcv
 import modal
 import numpy as np
 from pydantic import BaseModel
+import pysubs2
 from tqdm import tqdm
 import whisperx
 from google import genai
@@ -162,6 +163,7 @@ def create_subtitles_with_ffmpeg(transcript_segments: list, clip_start: float, c
     current_start = None
     current_end = None
 
+    # Extracts the word and timestamps.
     for segment in clip_segments:
         word = segment.get("word", "").strip()
         seg_start = segment.get("start")
@@ -169,9 +171,10 @@ def create_subtitles_with_ffmpeg(transcript_segments: list, clip_start: float, c
 
         if not word or seg_start is None or seg_end is None:
             continue
-
+        
+        # Adjust times relative to clip
         start_rel = max(0.0, seg_start - clip_start)
-        end_rel = max(0.0, seg_start - clip_start)
+        end_rel = max(0.0, seg_end - clip_start)
 
         if end_rel <= 0:
             continue
@@ -179,12 +182,62 @@ def create_subtitles_with_ffmpeg(transcript_segments: list, clip_start: float, c
         if not current_words:
             current_start = start_rel
             current_end = end_rel
+            current_words = [word]
+        elif len(current_words) >= max_word:
+            subtitles.append((current_start, current_end, " ".join(current_words)))
+            current_words = [word]
+            current_start = start_rel
+            current_end = end_rel
+        else:
+            current_words.append(word)
+            current_end = end_rel
+        
+    if current_words:
+        subtitles.append((current_start, current_end, " ".join(current_words)))
+
+    subs = pysubs2.SSAFile()
+
+    subs.info["WrapStyle"] = 0
+    subs.info["ScaledBorderAndShadow"] = "yes"
+    subs.info["PlayResX"] = 1080
+    subs.info["PalyResY"] = 1920
+    subs.info["ScriptType"] = "v4.00+"
+    style_name = "Default"
+    new_style = pysubs2.SSAStyle()
+    new_style.fontname = "Anton"
+    new_style.fontsize = 140
+    new_style.primarycolor = pysubs2.Color(255, 255, 255)
+    new_style.outline = 2.0
+    new_style.shadow = 2.0
+    new_style.shadowcolor = pysubs2.Color(0, 0, 0, 128)
+    new_style.alignment = 2
+    new_style.marginl = 50
+    new_style.marginr = 50
+    new_style.marginv = 50
+    new_style.spacing = 0.0
+
+    subs.styles[style_name] = new_style
+
+    for i, (start, end, text) in enumerate(subtitles):
+        start_time = pysubs2.make_time(s=start)
+        end_time = pysubs2.make_time(s=end)
+        line = pysubs2.SSAEvent(start=start_time, end=end_time, text=text, style=style_name)
+        subs.events.append(line)
+
+    subs.save(subtitle_path)
+
+    ffmprg_cmd = (f"ffmpeg -y -i {clip_video_path} -vf \"ass={subtitle_path}\" "
+                      f"-c:v h264 -preset fast -crf 23 {output_path}")
+        
+
+    subprocess.run(ffmprg_cmd, shell=True, check=True)
+
+
             
 
-# creates a single short clip
+# creates a single short clip 
 
-
-def process_clip(base_dir: str, original_video_path: str, s3_key: str, start_time: float, end_time: str, clip_index: int, transceipt_segments: list):
+def process_clip(base_dir: str, original_video_path: str, s3_key: str, start_time: float, end_time: str, clip_index: int, transcript_segments: list):
     clip_name = f"clip{clip_index}"
     s3_key_dir = os.path.dirname(s3_key)
     output_s3_key = f"{s3_key_dir}/{clip_name}.mp4"
@@ -244,10 +297,12 @@ def process_clip(base_dir: str, original_video_path: str, s3_key: str, start_tim
     cvv_end_time = time.time()
     print(
         f"Clip {clip_index} vertical video vreation time: {cvv_end_time - cvv_start_time:.2f} seconds")
+    
+    create_subtitles_with_ffmpeg(transcript_segments, start_time, end_time, vertical_mp4_path, subtitle_output_path, max_word=5)
 
     s3_client = boto3.client("s3")
     s3_client.upload_file(
-        vertical_mp4_path, "ai-podcast-clipper", output_s3_key)
+        subtitle_output_path, "ai-podcast-clipper", output_s3_key)
 
 
 @app.cls(gpu="L40S", timeout=900, retries=0, scaledown_window=20, secrets=[modal.Secret.from_name("ai-podcast-clipper-secret")], volumes={mount_path: volume})
